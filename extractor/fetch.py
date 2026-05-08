@@ -16,7 +16,7 @@ RETRY_BACKOFF = 2  # seconds between retries
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (compatible; ResearchScraper/1.0; "
-        "+https://github.com/WEB-CHILD/archived-web-scraper)"
+        "+https://github.com/WEB-CHILD/archived-web-data-extractor)"
     )
 }
 

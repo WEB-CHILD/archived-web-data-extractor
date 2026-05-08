@@ -1,4 +1,4 @@
-# Research HTML Scraper Framework - archived-web-scraper 
+# Research HTML Scraper Framework - archived-web-data-extractor
 
 A lightweight, config-driven Python framework for extracting structured data from static HTML pages
 ---
@@ -19,8 +19,8 @@ A lightweight, config-driven Python framework for extracting structured data fro
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/WEB-CHILD/archived-web-scraper.git
-cd archived-web-scraper
+git clone https://github.com/WEB-CHILD/archived-web-data-extractor.git
+cd archived-web-data-extractor
 ```
 
 ### 2. Create a virtual environment
