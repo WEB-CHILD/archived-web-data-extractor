@@ -4,8 +4,8 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from scraper.normalize import normalize_text, to_int
-from scraper.utils import get_logger
+from extractor.normalize import normalize_text, to_int
+from extractor.utils import get_logger
 
 logger = get_logger(__name__)
 

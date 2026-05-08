@@ -5,8 +5,8 @@ These tests use inline HTML strings — no network access required.
 
 import pytest
 
-from scraper.extract import extract_records
-from scraper.normalize import normalize_text, to_int, normalize_record
+from extractor.extract import extract_records
+from extractor.normalize import normalize_text, to_int, normalize_record
 
 
 # ---------------------------------------------------------------------------

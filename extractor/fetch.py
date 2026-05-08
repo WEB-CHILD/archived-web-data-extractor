@@ -5,7 +5,7 @@ from typing import Optional
 
 import requests
 
-from scraper.utils import get_logger
+from extractor.utils import get_logger
 
 logger = get_logger(__name__)
 
