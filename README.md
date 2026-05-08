@@ -1,4 +1,4 @@
-# Research HTML Scraper Framework - archived-web-data-extractor
+# Research HTML data extractor Framework - archived-web-data-extractor
 
 A lightweight, config-driven Python framework for extracting structured data from static HTML pages
 ---
@@ -6,8 +6,8 @@ A lightweight, config-driven Python framework for extracting structured data fro
 ## Features
 
 - Config-driven: define selectors in YAML, no code changes needed for new projects
-- Manifest-driven: point at a CSV of URLs to scrape in bulk
-- Supports standard URLs and Internet Archive (Wayback Machine) URLs
+- Manifest-driven: point at a CSV of URLs to extract data in bulk
+- Supports standard URLs
 - Outputs structured CSV and JSON
 - Robust error handling: failed URLs are logged and skipped; the run continues
 - Fully unit-tested
@@ -51,13 +51,13 @@ Output files appear in the `output/` directory as defined in the config.
 
 ## Configuration (YAML)
 
-Each scraping project is defined by a YAML config file.
+Each data extraction project is defined by a YAML config file.
 
 **Required keys:**
 
 | Key | Description |
 |---|---|
-| `name` | Human-readable name for this scraping project |
+| `name` | Human-readable name for this data extraction project |
 | `manifest` | Path to the URL manifest CSV |
 | `selectors` | CSS selectors — must include `row`; all other keys become field names |
 | `output` | Output file paths — must include `csv` and `json` |
@@ -106,7 +106,7 @@ output:
 
 ## URL Manifest (CSV)
 
-The manifest is a CSV file listing every URL to scrape, along with metadata columns that are attached to extracted records.
+The manifest is a CSV file listing every URL to extract data from, along with metadata columns that are attached to extracted records.
 
 ```csv
 year,month,url
@@ -140,7 +140,7 @@ python run.py --config configs/clubs_example.yaml
 # Verbose debug output
 python run.py --config configs/clubs_example.yaml --log-level DEBUG
 
-# Run a different scraping project
+# Run a different data extraction project
 python run.py --config configs/another_site.yaml
 ```
 
@@ -182,7 +182,7 @@ Tests use inline HTML fixtures — no network access required.
 
 ---
 
-## Adding a New Scraping Project
+## Adding a New Data Extraction Project
 
 1. **Create a manifest CSV** in `manifests/`:
    ```csv
@@ -203,7 +203,7 @@ Tests use inline HTML fixtures — no network access required.
      json: output/my_new_project.json
    ```
 
-3. **Run the scraper:**
+3. **Run the extractor:**
    ```bash
    python run.py --config configs/my_new_project.yaml
    ```
