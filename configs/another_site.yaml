@@ -1,0 +1,27 @@
+# another_site.yaml
+# Example config for a different site structure — unordered list of items.
+#
+# Demonstrates that the framework supports any HTML structure;
+# no code changes are needed, only a new YAML config and manifest.
+#
+# Expects pages structured like:
+#   <ul class="society-list">
+#     <li>
+#       <span class="name">Drama Society</span>
+#       <span class="members">120</span>
+#     </li>
+#     ...
+#   </ul>
+
+name: university_societies
+
+manifest: manifests/societies_urls.csv
+
+selectors:
+  row: "ul.society-list li"
+  society_name: "span.name"
+  member_count: "span.members"
+
+output:
+  csv: output/societies.csv
+  json: output/societies.json

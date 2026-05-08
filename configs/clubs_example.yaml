@@ -1,0 +1,21 @@
+# clubs_example.yaml
+# Scrape club names and member counts from an HTML table.
+#
+# Expects pages structured like:
+#   <table>
+#     <tr><td>Chess Club</td><td>43</td></tr>
+#     ...
+#   </table>
+
+name: youth_clubs
+
+manifest: manifests/clubs_urls.csv
+
+selectors:
+  row: "table tr"
+  club_name: "td:nth-child(1)"
+  member_count: "td:nth-child(2)"
+
+output:
+  csv: output/clubs.csv
+  json: output/clubs.json

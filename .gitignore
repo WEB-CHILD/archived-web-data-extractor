@@ -1,0 +1,54 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Test and Pytest/cache
+test_page.html
+.pytest_cache/
+.mypy_cache/
+
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Output files (keep .gitkeep)
+output/*
+!output/.gitkeep
+
+# Environment files
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints
+
+# SQLite
+*.sqlite3
+
+#Manifests
+manifests/urls.csv
+
+#config
+configs/extractor.yaml
+
+
+
