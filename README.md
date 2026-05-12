@@ -1,4 +1,4 @@
-# Research HTML data extractor Framework - archived-web-data-extractor
+# Research HTML Data Extractor Framework
 
 A lightweight, config-driven Python framework for extracting structured data from static HTML pages
 ---
