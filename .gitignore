@@ -17,6 +17,7 @@ dist/
 
 # Test and Pytest/cache
 test_page.html
+test_page_partial.html
 .pytest_cache/
 .mypy_cache/
 
