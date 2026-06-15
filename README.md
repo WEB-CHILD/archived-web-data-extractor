@@ -99,8 +99,31 @@ output:
 **Notes:**
 - The `row` selector identifies repeating container elements.
 - Every other key in `selectors` names a field; its value is the CSS selector applied within each row.
+- Field definitions can also be objects for attribute or regex extraction:
+  - `selector` (or `css`): CSS selector inside each row
+  - `attr`: attribute name to extract instead of text (for example `href`)
+  - `regex`: optional regex to post-process the extracted value
+  - `group`: optional regex group index/name (default `1`)
 - Fields ending in `_count` (including `member_count`) are automatically converted to integers.
 - Extra columns in the manifest (beyond `year`, `month`, `url`) are automatically attached as metadata to every record.
+
+Example field object:
+
+```yaml
+selectors:
+  row: "ul li"
+  board_name: "a"
+  board_link:
+    selector: "a"
+    attr: "href"
+  board_id:
+    selector: "a"
+    attr: "href"
+    regex: "[?&]bID=(\\d+)"
+    group: 1
+  numeric_fields:
+    - board_id
+```
 
 ---
 

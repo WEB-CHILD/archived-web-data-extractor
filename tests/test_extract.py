@@ -173,3 +173,49 @@ class TestExtractRecords:
         assert len(records) == 2
         assert records[0]["society_name"] == "Drama Society"
         assert records[0]["member_count"] == 120
+
+    def test_extracts_attribute_with_field_spec(self):
+        html = """
+        <html><body>
+        <ul>
+          <li><a href="https://example.com/viewboard.jhtml?bID=20">Your World</a></li>
+          <li><a href="https://example.com/viewboard.jhtml?bID=21">Another Board</a></li>
+        </ul>
+        </body></html>
+        """
+        selectors = {
+            "row": "ul li",
+            "board_name": "a",
+            "board_link": {"selector": "a", "attr": "href"},
+        }
+
+        records = extract_records(html, selectors, METADATA)
+        assert len(records) == 2
+        assert records[0]["board_name"] == "Your World"
+        assert records[0]["board_link"] == "https://example.com/viewboard.jhtml?bID=20"
+
+    def test_extracts_regex_group_with_field_spec(self):
+        html = """
+        <html><body>
+        <ul>
+          <li><a href="https://example.com/viewboard.jhtml?bID=20">Your World</a></li>
+          <li><a href="https://example.com/viewboard.jhtml?bID=21">Another Board</a></li>
+        </ul>
+        </body></html>
+        """
+        selectors = {
+            "row": "ul li",
+            "board_name": "a",
+            "board_id": {
+                "selector": "a",
+                "attr": "href",
+                "regex": r"[?&]bID=(\\d+)",
+                "group": 1,
+            },
+            "numeric_fields": ["board_id"],
+        }
+
+        records = extract_records(html, selectors, METADATA)
+        assert len(records) == 2
+        assert records[0]["board_id"] == 20
+        assert records[1]["board_id"] == 21

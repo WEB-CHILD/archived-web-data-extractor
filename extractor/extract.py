@@ -1,5 +1,6 @@
 """Extract structured records from raw HTML using config-driven CSS selectors."""
 
+import re
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -9,13 +10,63 @@ from extractor.utils import get_logger
 
 logger = get_logger(__name__)
 
-# Keys in `selectors` that are not CSS selector strings
+# Keys in `selectors` that are metadata blocks (not field selectors)
 _META_SELECTOR_KEYS = {"row", "numeric_fields"}
+
+
+def _extract_with_spec(
+    row: Any,
+    field_selector: str | dict[str, Any],
+) -> str:
+    """Extract a raw field value from a row using either string or dict spec.
+
+    Supported selector forms:
+    - "field": "css selector"
+    - "field":
+        selector: "css selector"   # or css
+        attr: "href"              # optional, default text extraction
+        regex: "bID=(\\d+)"       # optional
+        group: 1                    # optional, default 1 when regex present
+    """
+    if isinstance(field_selector, str):
+        element = row.select_one(field_selector)
+        return element.get_text() if element else ""
+
+    if not isinstance(field_selector, dict):
+        return ""
+
+    selector = field_selector.get("selector") or field_selector.get("css")
+    if not selector or not isinstance(selector, str):
+        return ""
+
+    element = row.select_one(selector)
+    if element is None:
+        return ""
+
+    attr = field_selector.get("attr")
+    if attr:
+        raw_value = element.get(attr, "")
+    else:
+        raw_value = element.get_text()
+
+    regex = field_selector.get("regex")
+    if regex and isinstance(regex, str):
+        match = re.search(regex, str(raw_value))
+        if not match:
+            return ""
+
+        group = field_selector.get("group", 1)
+        try:
+            return match.group(group)
+        except (IndexError, TypeError):
+            return ""
+
+    return str(raw_value)
 
 
 def extract_records(
     html: str,
-    selectors: dict[str, str],
+    selectors: dict[str, Any],
     metadata: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Parse HTML and extract records using CSS selectors from config.
@@ -28,8 +79,10 @@ def extract_records(
 
     Args:
         html: Raw HTML string to parse.
-        selectors: Dict mapping field names to CSS selector strings.
-                   Must include a 'row' key for the row selector.
+        selectors: Dict mapping field names to selector definitions.
+               Must include a 'row' key for the row selector.
+               Field definitions may be a CSS selector string or a dict
+               containing selector/css, optional attr, and optional regex.
         metadata: Dict of metadata to attach to every record
                   (e.g. year, month, source_url).
 
@@ -48,7 +101,7 @@ def extract_records(
     rows = soup.select(row_selector)
     logger.info("Found %d rows matching selector '%s'", len(rows), row_selector)
 
-    field_selectors = {
+    field_selectors: dict[str, Any] = {
         key: selector
         for key, selector in selectors.items()
         if key not in _META_SELECTOR_KEYS
@@ -61,8 +114,7 @@ def extract_records(
         record: dict[str, Any] = {}
 
         for field_name, selector in field_selectors.items():
-            element = row.select_one(selector)
-            raw_text = element.get_text() if element else ""
+            raw_text = _extract_with_spec(row, selector)
             value = normalize_text(raw_text)
 
             # Convert to int if field is explicitly listed or matches naming convention
