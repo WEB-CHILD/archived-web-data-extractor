@@ -235,6 +235,90 @@ No changes to any Python files are needed.
 
 ---
 
+## Thread Scraper (messageboard playback)
+
+`run_thread_scraper.py` scrapes messageboard threads from SolrWayback playback pages. It takes a JSON list of board entries, visits each board page, discovers thread links, and recursively extracts all posts.
+
+### Input format
+
+Each entry in the input JSON represents one board page snapshot:
+
+| Field | Type | Description |
+|---|---|---|
+| `board_name` | string | Human-readable board name |
+| `board_link` | string | Full SolrWayback playback URL for the board page |
+| `board_id` | integer | Board ID extracted from the URL |
+| `year`, `month`, `day` | integer | Crawl date components |
+| `has_playback` | boolean | Skip this entry if `false` |
+| `has_paging` | boolean | Follow "Next posts" pager links across board pages if `true` |
+
+See `examples/thread_scraper_input.json` for a minimal working example.
+
+### CLI usage
+
+```bash
+# Single combined output file
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output output/threads.json
+
+# One JSON file per board + manifest index
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/
+
+# Both at once
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --output output/threads_combined.json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--input` | *(required)* | Path to input JSON file |
+| `--output` | — | Path for combined output JSON |
+| `--output-dir` | — | Directory for per-board JSON files and `index.json` manifest |
+| `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+A log file is written alongside the output (`scrape.log`).
+
+### How scraping works
+
+1. Entries with `has_playback: false` are skipped.
+2. For each board page, all `viewthread.jhtml` links are collected as thread seeds.
+3. If `has_paging: true`, "Next posts" pager links are followed to collect seeds from subsequent board pages.
+4. Each thread is scraped by fetching its page and following any further `viewthread.jhtml` links found (handles thread pagination and continuation links).
+5. If a page signals `"Url has never been harvested:"`, the thread is marked `not_harvested` and no posts are extracted from that page.
+6. Scraping a thread stops after **3 consecutive fetch failures**. A successful page fetch resets the failure counter, so a single network hiccup does not terminate a long thread.
+
+### Output format
+
+```json
+[
+  {
+    "board_link": "http://...",
+    "threads": [
+      {
+        "thread_url": "http://...",
+        "crawl_date": "20030101120000",
+        "status": "ok",
+        "posts": [
+          {
+            "content": "Post body text",
+            "metadata": {
+              "subject": "Thread title",
+              "date": "January 1, 2003",
+              "from": "Username",
+              "subInfo": ["Date: January 1, 2003", "From: Username"],
+              "playback_url": "http://...",
+              "year_time_jump_detected": false
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+`status` values: `"ok"` (posts extracted), `"not_harvested"` (archive has no snapshot for this URL).
+
+---
+
 ## Error Handling
 
 - Network errors, timeouts, and parse failures are logged and skipped.
