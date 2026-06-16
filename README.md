@@ -276,6 +276,18 @@ python run_thread_scraper.py --input examples/thread_scraper_input.json --output
 
 A log file is written alongside the output (`scrape.log`).
 
+### Architecture (3 layers)
+
+The thread scraper is split so site-specific code is isolated from the generic engine:
+
+| Layer | Module | Responsibility |
+|---|---|---|
+| Engine | `extractor/thread_scraper.py` | Traversal, retry/failure policy, snapshot de-dup, output. **No site-specific code.** |
+| Archive adapter | `extractor/archive/solrwayback.py` | SolrWayback playback URL parsing, crawl-date extraction, "never harvested" detection. Shared by any site behind SolrWayback. |
+| Site profile | `extractor/sites/nick_messageboards.py` | nick.com-specific: `viewthread.jhtml`/`viewboard.jhtml` link patterns, `bID`/`tID`/`mID` params, `MainSubject`/`subInfo`/`subject` HTML selectors, "Next posts" pager. |
+
+The engine takes a **site profile** (defaults to `NickMessageboards`). To scrape a different board, add a new module under `extractor/sites/` implementing the same methods (`thread_id`, `board_id`, `find_thread_links`, `find_next_page_link`, `is_board_dead_end`, `extract_posts`) and pass an instance via the `profile=` argument of the `scrape_*` functions — no engine changes needed. The expected interface is documented by the `SiteProfile` Protocol in `extractor/thread_scraper.py`.
+
 ### How scraping works
 
 1. Entries with `has_playback: false` are skipped.

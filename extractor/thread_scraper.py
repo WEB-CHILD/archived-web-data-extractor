@@ -1,16 +1,26 @@
-"""Recursive thread scraper tailored to messageboard playback pages.
+"""Site-agnostic recursive thread scraper for archived message boards.
 
-Follows the workflow described in `instructions.txt`:
+This is the *engine* layer. It owns traversal, retry/failure policy, snapshot
+de-duplication and output, but contains no site-specific HTML or URL knowledge.
+That knowledge lives in two pluggable layers:
+
+- `extractor.archive.solrwayback` — the web-archive adapter (playback URL
+  parsing, "never harvested" detection). Shared by any site behind SolrWayback.
+- a *site profile* (see `extractor.sites.nick_messageboards.NickMessageboards`)
+  — per-site link patterns and post parsing.
+
+Workflow (per `instructions.txt`):
 - Read a JSON list of board entries (with `board_link` and `has_playback`).
-- Only process entries where `has_playback` is true.
-- From each board page find all links containing `viewthread.jhtml` and treat
-  them as thread entry points.
-- For each thread URL, fetch the page, wait 1-2s, detect "Url has never been
-  harvested:" and either record metadata or extract posts.
-- Recursively follow any additional `viewthread.jhtml` links discovered on
-  thread pages until no new thread URLs remain.
+- Process only entries where `has_playback` is true.
+- Find thread links on each board page (via the site profile) as seeds.
+- For each thread URL, fetch the page, detect "never harvested" and either
+  record metadata or extract posts.
+- Recursively follow additional thread links discovered on thread pages until
+  no new thread URLs remain.
 
-This module re-uses `fetch_html` and `export_json` from the existing codebase.
+To scrape a different board, implement a new site profile with the same methods
+as `NickMessageboards` and pass it to the `scrape_*` functions; no engine code
+changes are required.
 """
 
 from __future__ import annotations
@@ -20,261 +30,86 @@ import re
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from typing import Any, Dict, List, Optional, Protocol, Set
 
 from bs4 import BeautifulSoup
 
-from extractor.fetch import fetch_html
+from extractor.archive import solrwayback
 from extractor.export import export_json
+from extractor.fetch import fetch_html
+from extractor.sites.nick_messageboards import NickMessageboards
 from extractor.utils import get_logger
 
 logger = get_logger(__name__)
+
+MAX_FETCH_FAILURES_PER_THREAD = 3
+
+
+class SiteProfile(Protocol):
+    """Interface the engine expects from a site profile.
+
+    See `extractor.sites.nick_messageboards.NickMessageboards` for a reference
+    implementation.
+    """
+
+    def thread_id(self, url: str) -> str: ...
+    def board_id(self, url: str) -> str: ...
+    def find_thread_links(self, soup: BeautifulSoup, base_url: str) -> List[str]: ...
+    def find_next_page_link(self, soup: BeautifulSoup, base_url: str) -> Optional[str]: ...
+    def is_board_dead_end(self, page_text: str) -> bool: ...
+    def extract_posts(self, soup: BeautifulSoup) -> List[Dict[str, Any]]: ...
+
+
+# Default profile. Swap by passing `profile=` to the scrape_* functions.
+DEFAULT_PROFILE: SiteProfile = NickMessageboards()
 
 
 def _sleep_polite() -> None:
     time.sleep(0.3)
 
 
-
-def _extract_original_url(playback_url: str) -> str:
-    """Extract original URL from a solrwayback playback URL when possible."""
-    marker = "/services/web/"
-    if marker in playback_url:
-        try:
-            after = playback_url.split(marker, 1)[1]
-            # Format: <14-digit timestamp>/<original-url>
-            parts = after.split("/", 1)
-            if len(parts) == 2:
-                return unquote(parts[1])
-        except Exception:
-            return playback_url
-    return playback_url
-
-
-def _extract_crawl_date(playback_url: str) -> str:
-    """Extract 14-digit crawl date from solrwayback URL if present."""
-    marker = "/services/web/"
-    if marker not in playback_url:
-        return ""
-    try:
-        after = playback_url.split(marker, 1)[1]
-        date_part = after.split("/", 1)[0]
-        return date_part if len(date_part) == 14 and date_part.isdigit() else ""
-    except Exception:
-        return ""
-
-
-def _extract_crawl_year(playback_url: str) -> str:
-    """Extract year from a playback crawl date (YYYYMMDDHHMMSS)."""
-    crawl_date = _extract_crawl_date(playback_url)
-    return crawl_date[:4] if len(crawl_date) >= 4 else ""
-
-
-def _extract_board_id(url: str) -> str:
-    """Extract board id from board URL query if present."""
-    original = _extract_original_url(url)
-    parsed = urlparse(original)
-    query = parse_qs(parsed.query)
-    return (query.get("bID") or query.get("bid") or [""])[0]
-
-
 def _slugify(value: str) -> str:
-    """Create filesystem-safe, readable slug."""
+    """Create a filesystem-safe, readable slug."""
     text = value.strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     text = re.sub(r"-+", "-", text).strip("-")
     return text or "board"
 
 
-def _canonical_thread_id(url: str) -> str:
-    """Build stable id for a thread page based on bID/tID/mID.
-
-    This collapses multiple archival snapshots of the same logical message.
-    """
-    original = _extract_original_url(url)
-    parsed = urlparse(original)
-    query = parse_qs(parsed.query)
-
-    bid = (query.get("bID") or query.get("bid") or [""])[0]
-    tid = (query.get("tID") or query.get("tid") or [""])[0]
-    mid = (query.get("mID") or query.get("mid") or [""])[0]
-    offset = (query.get("offset") or [""])[0]
-
-    # If these keys are missing, fall back to original URL string.
-    if not (bid or tid or mid):
-        return original
-
-    return f"bid={bid}|tid={tid}|mid={mid}|offset={offset}"
-
-
-def _visit_key(url: str) -> str:
+def _visit_key(url: str, profile: SiteProfile) -> str:
     """Visited-key that preserves distinct crawl snapshots by crawl date."""
-    crawl_date = _extract_crawl_date(url)
-    return f"crawl={crawl_date}|{_canonical_thread_id(url)}"
+    crawl_date = solrwayback.extract_crawl_date(url)
+    return f"crawl={crawl_date}|{profile.thread_id(url)}"
 
 
-def _find_viewthread_links(soup: BeautifulSoup, base_url: str) -> List[str]:
-    """Find viewthread links but filter out obvious ad/calendar/third-party URLs.
+def scrape_thread(
+    start_url: str,
+    visited: Optional[Set[str]] = None,
+    profile: SiteProfile = DEFAULT_PROFILE,
+) -> Dict[str, Any]:
+    """Scrape a thread from `start_url`, following pagination/continuation.
 
-    To avoid following unrelated links (ad.doubleclick, calendar wrappers,
-    etc.) require that the resolved URL contain 'viewthread.jhtml' and also
-    contain the site's host (e.g. 'nick.com') inferred from the base_url.
-    """
-    anchors = soup.find_all("a", href=True)
-    urls: List[str] = []
-
-    host_hint = "nick.com"
-    if "nick.com" in base_url:
-        host_hint = "nick.com"
-
-    for a in anchors:
-        # Skip links in the SolrWayback toolbar/modal (calendar, prev/next snapshots)
-        if a.find_parent(id="tegModal") is not None:
-            continue
-
-        href = a["href"]
-        if "viewthread.jhtml" not in href:
-            continue
-
-        full = urljoin(base_url, href)
-
-        # Filter out known noise: ads, calendar wrappers, and third-party hosts
-        if "doubleclick.net" in full or "/ads/" in full or "calendar?url=" in full:
-            continue
-
-        # Require host hint to be present to avoid unrelated hosts
-        if host_hint and host_hint not in full:
-            continue
-
-        urls.append(full)
-
-    return urls
-
-
-def _find_next_posts_link(soup: BeautifulSoup, base_url: str) -> Optional[str]:
-    """Find board pager link labeled 'Next posts' if present."""
-    for a in soup.find_all("a", href=True):
-        if a.find_parent(id="tegModal") is not None:
-            continue
-
-        label = a.get_text(" ", strip=True).lower()
-        if "next posts" not in label:
-            continue
-
-        full = urljoin(base_url, a["href"])
-        if "viewboard.jhtml" in full:
-            return full
-
-    return None
-
-
-def _extract_posts_from_soup(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    posts: List[Dict[str, Any]] = []
-
-    # Find all main post content blocks
-    for div in soup.find_all("div", class_="MainSubject"):
-        # Content: flattened visible text
-        content = div.get_text(" ", strip=True)
-
-        # Try to find metadata nearby.
-        # The original pages sometimes put `p.subInfo` and `p.subject` in a
-        # sibling <td> or higher-level ancestor. Search ancestors and nearby
-        # siblings up to a small depth to be robust.
-        sub_info: List[str] = []
-        subject_text = ""
-
-        # Search up the ancestor chain for metadata
-        for depth, anc in enumerate(div.parents):
-            if depth > 6:
-                break
-            if hasattr(anc, "find_all"):
-                for p in anc.find_all("p", class_="subInfo"):
-                    text = p.get_text(" ", strip=True)
-                    if text and text not in sub_info:
-                        sub_info.append(text)
-                subject = anc.find("p", class_="subject")
-                if subject and not subject_text:
-                    subject_text = subject.get_text(" ", strip=True)
-            # Also check immediate previous siblings which often contain headers
-            prev = getattr(anc, "previous_sibling", None)
-            if prev and hasattr(prev, "find_all"):
-                for p in prev.find_all("p", class_="subInfo"):
-                    text = p.get_text(" ", strip=True)
-                    if text and text not in sub_info:
-                        sub_info.append(text)
-                subject = prev.find("p", class_="subject")
-                if subject and not subject_text:
-                    subject_text = subject.get_text(" ", strip=True)
-
-        # As a fallback, check immediate previous elements in the document
-        if not sub_info or not subject_text:
-            sib = div.previous_sibling
-            checks = 0
-            while sib and checks < 6:
-                if hasattr(sib, "find_all"):
-                    for p in sib.find_all("p", class_="subInfo"):
-                        text = p.get_text(" ", strip=True)
-                        if text and text not in sub_info:
-                            sub_info.append(text)
-                    subject = sib.find("p", class_="subject")
-                    if subject and not subject_text:
-                        subject_text = subject.get_text(" ", strip=True)
-                sib = sib.previous_sibling
-                checks += 1
-
-        # Promote common subInfo entries to first-class metadata fields
-        date_str = ""
-        from_str = ""
-        for info in sub_info:
-            if not info:
-                continue
-            lowered = info.strip().lower()
-            if lowered.startswith("date:"):
-                date_str = info.split(":", 1)[1].strip()
-            elif lowered.startswith("from:"):
-                from_str = info.split(":", 1)[1].strip()
-
-        posts.append(
-            {
-                "content": content,
-                "metadata": {
-                    "subject": subject_text,
-                    "subInfo": sub_info,
-                    "date": date_str,
-                    "from": from_str,
-                },
-            }
-        )
-
-    return posts
-
-
-MAX_FETCH_FAILURES_PER_THREAD = 3
-
-
-def scrape_thread(start_url: str, visited: Optional[Set[str]] = None) -> Dict[str, Any]:
-    """Scrape a thread starting from `start_url`, following pagination/continuation.
-
-    Returns a dict with keys: `thread_url`, `status`, `posts`.
+    Returns a dict with keys: `thread_url`, `crawl_date`, `status`, `posts`.
+    Stops after `MAX_FETCH_FAILURES_PER_THREAD` consecutive fetch failures; a
+    successful fetch resets the counter.
     """
     if visited is None:
         visited = set()
 
     thread_result: Dict[str, Any] = {
         "thread_url": start_url,
-        "crawl_date": _extract_crawl_date(start_url),
+        "crawl_date": solrwayback.extract_crawl_date(start_url),
         "status": "ok",
         "posts": [],
     }
-    thread_crawl_year = _extract_crawl_year(start_url)
+    thread_crawl_year = solrwayback.extract_crawl_year(start_url)
 
     queue = deque([start_url])
     consecutive_failures = 0
 
     while queue:
         url = queue.popleft()
-        page_id = _visit_key(url)
+        page_id = _visit_key(url, profile)
         if page_id in visited:
             continue
         visited.add(page_id)
@@ -304,21 +139,15 @@ def scrape_thread(start_url: str, visited: Optional[Set[str]] = None) -> Dict[st
 
         soup = BeautifulSoup(html, "lxml")
 
-        # Detect 'Url has never been harvested:' — treat as metadata-only
-        if "Url has never been harvested:" in soup.get_text():
+        # Detect 'never harvested' — treat as metadata-only, no posts.
+        if solrwayback.is_not_harvested(soup.get_text()):
             logger.info("Thread not harvested: %s", url)
-            # If first page, mark status; otherwise ensure we don't overwrite ok
-            if thread_result["status"] != "ok":
-                thread_result["status"] = "not_harvested"
-            else:
-                thread_result["status"] = "not_harvested"
-            # Do not attempt to scrape posts on this page; continue to next
+            thread_result["status"] = "not_harvested"
             continue
 
-        # Extract posts from this page
-        posts = _extract_posts_from_soup(soup)
+        posts = profile.extract_posts(soup)
         if posts:
-            page_crawl_year = _extract_crawl_year(url)
+            page_crawl_year = solrwayback.extract_crawl_year(url)
             year_jump_detected = (
                 bool(thread_crawl_year)
                 and bool(page_crawl_year)
@@ -331,22 +160,24 @@ def scrape_thread(start_url: str, visited: Optional[Set[str]] = None) -> Dict[st
                 metadata["year_time_jump_detected"] = year_jump_detected
             thread_result["posts"].extend(posts)
 
-        # Find additional viewthread links on the page and add unseen ones to queue
-        new_links = _find_viewthread_links(soup, url)
-        for link in new_links:
-            if _visit_key(link) not in visited:
+        # Queue any further thread links found on this page.
+        for link in profile.find_thread_links(soup, url):
+            if _visit_key(link, profile) not in visited:
                 queue.append(link)
 
-    # If no posts were captured but the page wasn't explicitly "not harvested",
-    # leave status as 'ok' and empty posts (caller can interpret as needed).
+    # No posts but not explicitly "not harvested": leave status 'ok', empty posts.
     return thread_result
 
 
-def scrape_board(board_link: str, has_paging: bool = False) -> Dict[str, Any]:
+def scrape_board(
+    board_link: str,
+    has_paging: bool = False,
+    profile: SiteProfile = DEFAULT_PROFILE,
+) -> Dict[str, Any]:
     """Scrape all threads for a board page and optionally traverse pager pages."""
     board_result: Dict[str, Any] = {"board_link": board_link, "threads": []}
 
-    # Reuse one visited set across all board pages to avoid duplicate thread work
+    # Reuse one visited set across all board pages to avoid duplicate thread work.
     visited_threads: Set[str] = set()
     seen_board_pages: Set[str] = set()
     board_queue = deque([board_link])
@@ -368,43 +199,43 @@ def scrape_board(board_link: str, has_paging: bool = False) -> Dict[str, Any]:
         soup = BeautifulSoup(html, "lxml")
         page_text = soup.get_text(" ", strip=True).lower()
 
-        # Pager dead ends: stop pursuing board paging when archive has no page
-        if "url has never been harvested:" in page_text or "get flash" in page_text:
+        # Stop pursuing board paging at archive/site dead ends.
+        if solrwayback.is_not_harvested(page_text) or profile.is_board_dead_end(page_text):
             logger.info("Board paging dead-end reached: %s", current_board_url)
             break
 
-        # Find seed thread links on this board page
-        seed_links = _find_viewthread_links(soup, current_board_url)
-        seen_seed = set()
-        deduped = []
-        for u in seed_links:
+        # Seed thread links on this board page (deduped, order-preserving).
+        seed_links: List[str] = []
+        seen_seed: Set[str] = set()
+        for u in profile.find_thread_links(soup, current_board_url):
             if u not in seen_seed:
-                deduped.append(u)
+                seed_links.append(u)
                 seen_seed.add(u)
 
-        seed_links = deduped
         logger.info("Found %d seed thread links on board page", len(seed_links))
 
         for link in seed_links:
-            if _visit_key(link) in visited_threads:
+            if _visit_key(link, profile) in visited_threads:
                 continue
-            thread_data = scrape_thread(link, visited_threads)
+            thread_data = scrape_thread(link, visited_threads, profile=profile)
             board_result["threads"].append(thread_data)
 
-        # After scraping threads from this page, follow pager if requested.
+        # Follow the pager if requested.
         if has_paging:
-            next_posts = _find_next_posts_link(soup, current_board_url)
-            if next_posts and next_posts not in seen_board_pages:
-                logger.info("Following board pager Next posts: %s", next_posts)
-                board_queue.append(next_posts)
+            next_page = profile.find_next_page_link(soup, current_board_url)
+            if next_page and next_page not in seen_board_pages:
+                logger.info("Following board pager Next posts: %s", next_page)
+                board_queue.append(next_page)
 
     return board_result
 
 
-def scrape_boards_from_file(input_path: str, output_path: str) -> None:
-    """Load input JSON of boards, process entries with has_playback True and
-    write output JSON to `output_path`.
-    """
+def scrape_boards_from_file(
+    input_path: str,
+    output_path: str,
+    profile: SiteProfile = DEFAULT_PROFILE,
+) -> None:
+    """Load input JSON of boards, process `has_playback` entries, write output."""
     with open(input_path, "r", encoding="utf-8") as f:
         entries = json.load(f)
 
@@ -415,7 +246,9 @@ def scrape_boards_from_file(input_path: str, output_path: str) -> None:
         board_link = entry.get("board_link") or entry.get("url")
         if not board_link:
             continue
-        board_data = scrape_board(board_link, has_paging=bool(entry.get("has_paging")))
+        board_data = scrape_board(
+            board_link, has_paging=bool(entry.get("has_paging")), profile=profile
+        )
         results.append(board_data)
 
     export_json(results, output_path)
@@ -425,6 +258,7 @@ def scrape_boards_from_file_chunked(
     input_path: str,
     output_dir: str,
     combined_output_path: Optional[str] = None,
+    profile: SiteProfile = DEFAULT_PROFILE,
 ) -> None:
     """Scrape boards and write one JSON file per board plus a manifest.
 
@@ -449,11 +283,13 @@ def scrape_boards_from_file_chunked(
             continue
 
         board_index += 1
-        board_data = scrape_board(board_link, has_paging=bool(entry.get("has_paging")))
+        board_data = scrape_board(
+            board_link, has_paging=bool(entry.get("has_paging")), profile=profile
+        )
         combined_results.append(board_data)
 
-        board_id = str(entry.get("board_id") or _extract_board_id(board_link) or "unknown")
-        crawl_date = _extract_crawl_date(board_link) or "unknown"
+        board_id = str(entry.get("board_id") or profile.board_id(board_link) or "unknown")
+        crawl_date = solrwayback.extract_crawl_date(board_link) or "unknown"
         input_year = entry.get("year")
         crawl_year = str(input_year) if input_year is not None else (crawl_date[:4] if len(crawl_date) >= 4 else "unknown")
         board_name = str(entry.get("board_name") or f"board-{board_id}")
