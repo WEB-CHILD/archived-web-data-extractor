@@ -55,6 +55,7 @@ class SiteProfile(Protocol):
     def thread_id(self, url: str) -> str: ...
     def board_id(self, url: str) -> str: ...
     def find_thread_links(self, soup: BeautifulSoup, base_url: str) -> List[str]: ...
+    def find_thread_subjects(self, soup: BeautifulSoup, base_url: str) -> List[Dict[str, str]]: ...
     def find_next_page_link(self, soup: BeautifulSoup, base_url: str) -> Optional[str]: ...
     def is_board_dead_end(self, page_text: str) -> bool: ...
     def extract_posts(self, soup: BeautifulSoup) -> List[Dict[str, Any]]: ...
@@ -325,3 +326,100 @@ def scrape_boards_from_file_chunked(
 
     if combined_output_path:
         export_json(combined_results, combined_output_path)
+
+
+def scrape_board_subjects(
+    board_link: str,
+    has_paging: bool = False,
+    profile: SiteProfile = DEFAULT_PROFILE,
+) -> List[Dict[str, str]]:
+    """Collect thread subjects from a board index page (and its pager pages).
+
+    Does not fetch individual thread pages — subjects and their URLs are read
+    directly from the `viewthread.jhtml` links on the board listing.  Returns
+    a de-duplicated, order-preserving list of dicts with 'subject' and 'url'.
+    """
+    threads: List[Dict[str, str]] = []
+    seen_thread_ids: Set[str] = set()
+    seen_board_pages: Set[str] = set()
+    board_queue: deque = deque([board_link])
+
+    while board_queue:
+        current_url = board_queue.popleft()
+        if current_url in seen_board_pages:
+            continue
+        seen_board_pages.add(current_url)
+
+        logger.info("Fetching board subjects page: %s", current_url)
+        html = fetch_html(current_url)
+        _sleep_polite()
+
+        if html is None:
+            logger.warning("Failed to fetch board page: %s", current_url)
+            continue
+
+        soup = BeautifulSoup(html, "lxml")
+        page_text = soup.get_text(" ", strip=True).lower()
+
+        if solrwayback.is_not_harvested(page_text) or profile.is_board_dead_end(page_text):
+            logger.info("Board paging dead-end reached: %s", current_url)
+            break
+
+        for item in profile.find_thread_subjects(soup, current_url):
+            tid = profile.thread_id(item["url"])
+            if tid not in seen_thread_ids:
+                seen_thread_ids.add(tid)
+                if item["subject"]:
+                    threads.append({"subject": item["subject"], "url": item["url"]})
+
+        if has_paging:
+            next_page = profile.find_next_page_link(soup, current_url)
+            if next_page and next_page not in seen_board_pages:
+                logger.info("Following board pager: %s", next_page)
+                board_queue.append(next_page)
+
+    return threads
+
+
+def scrape_board_subjects_from_file(
+    input_path: str,
+    output_path: str,
+    profile: SiteProfile = DEFAULT_PROFILE,
+) -> None:
+    """Read board entries from input JSON and collect thread subjects for each.
+
+    Processes only entries where `has_playback` is true.  Writes a JSON array
+    where each element contains board metadata plus a `subjects` list grouped
+    by `year` and `board_name` (as present in the input entry).
+    """
+    with open(input_path, "r", encoding="utf-8") as f:
+        entries = json.load(f)
+
+    results: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not entry.get("has_playback"):
+            continue
+        board_link = entry.get("board_link") or entry.get("url")
+        if not board_link:
+            continue
+
+        threads = scrape_board_subjects(
+            board_link, has_paging=bool(entry.get("has_paging")), profile=profile
+        )
+        logger.info(
+            "Board '%s' (%s): %d threads collected",
+            entry.get("board_name"),
+            entry.get("year"),
+            len(threads),
+        )
+        results.append(
+            {
+                "year": entry.get("year"),
+                "board_name": entry.get("board_name"),
+                "board_id": entry.get("board_id"),
+                "board_link": board_link,
+                "threads": threads,
+            }
+        )
+
+    export_json(results, output_path)

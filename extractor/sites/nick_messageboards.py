@@ -62,10 +62,19 @@ class NickMessageboards:
 
     def find_thread_links(self, soup: BeautifulSoup, base_url: str) -> List[str]:
         """Find thread links, filtering ads/calendar/third-party hosts."""
-        urls: List[str] = []
+        return [item["url"] for item in self.find_thread_subjects(soup, base_url)]
+
+    def find_thread_subjects(
+        self, soup: BeautifulSoup, base_url: str
+    ) -> List[Dict[str, str]]:
+        """Find thread links and their subject text from a board index page.
+
+        Returns dicts with 'subject' (link text) and 'url' (absolute playback URL).
+        Applies the same ad/third-party filtering as find_thread_links.
+        """
+        items: List[Dict[str, str]] = []
 
         for a in soup.find_all("a", href=True):
-            # Skip the SolrWayback toolbar/modal (calendar, prev/next snapshots).
             if a.find_parent(id="tegModal") is not None:
                 continue
 
@@ -75,16 +84,15 @@ class NickMessageboards:
 
             full = urljoin(base_url, href)
 
-            # Drop known noise: ads, calendar wrappers, third-party hosts.
             if "doubleclick.net" in full or "/ads/" in full or "calendar?url=" in full:
                 continue
 
             if self.HOST_HINT and self.HOST_HINT not in full:
                 continue
 
-            urls.append(full)
+            items.append({"subject": a.get_text(" ", strip=True), "url": full})
 
-        return urls
+        return items
 
     def find_next_page_link(self, soup: BeautifulSoup, base_url: str) -> Optional[str]:
         """Find the board pager link labeled 'Next posts', if present."""
