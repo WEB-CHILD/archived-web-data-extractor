@@ -331,54 +331,62 @@ def scrape_boards_from_file_chunked(
         return idx, entry, board_data
 
     scraped: List[Tuple[int, Dict[str, Any], Dict[str, Any]]] = [None] * len(valid)  # type: ignore[list-item]
+    manifest_by_pos: Dict[int, Dict[str, Any]] = {}
+
     with ThreadPoolExecutor(max_workers=board_workers) as executor:
         future_to_pos = {executor.submit(_scrape, item): pos for pos, item in enumerate(valid)}
         for future in as_completed(future_to_pos):
             pos = future_to_pos[future]
             try:
-                scraped[pos] = future.result()
+                result = future.result()
+                scraped[pos] = result
             except Exception as exc:
                 idx, entry = valid[pos]
                 logger.error("Board scrape failed (index %d): %s", idx, exc)
+                continue
 
-    manifest: List[Dict[str, Any]] = []
-    combined_results: List[Dict[str, Any]] = []
+            idx, entry, board_data = result
+            board_link_w: str = entry.get("board_link") or entry.get("url")  # type: ignore[assignment]
+            assert board_link_w
 
-    for item in scraped:
-        if item is None:
-            continue
-        idx, entry, board_data = item
-        board_link: str = entry.get("board_link") or entry.get("url")  # type: ignore[assignment]
-        assert board_link
-        combined_results.append(board_data)
+            board_id = str(entry.get("board_id") or profile.board_id(board_link_w) or "unknown")
+            crawl_date = solrwayback.extract_crawl_date(board_link_w) or "unknown"
+            input_year = entry.get("year")
+            crawl_year = str(input_year) if input_year is not None else (crawl_date[:4] if len(crawl_date) >= 4 else "unknown")
+            board_name = str(entry.get("board_name") or f"board-{board_id}")
+            slug = _slugify(board_name)
 
-        board_id = str(entry.get("board_id") or profile.board_id(board_link) or "unknown")
-        crawl_date = solrwayback.extract_crawl_date(board_link) or "unknown"
-        input_year = entry.get("year")
-        crawl_year = str(input_year) if input_year is not None else (crawl_date[:4] if len(crawl_date) >= 4 else "unknown")
-        board_name = str(entry.get("board_name") or f"board-{board_id}")
-        slug = _slugify(board_name)
+            file_name = f"{idx:04d}_y-{crawl_year}_bid-{board_id}_crawl-{crawl_date}_{slug}.json"
+            file_path = out_dir / file_name
 
-        file_name = f"{idx:04d}_y-{crawl_year}_bid-{board_id}_crawl-{crawl_date}_{slug}.json"
-        file_path = out_dir / file_name
+            with file_path.open("w", encoding="utf-8") as f:
+                json.dump([board_data], f, indent=2, ensure_ascii=False)
+            logger.info("Wrote board file: %s", file_path)
 
-        with file_path.open("w", encoding="utf-8") as f:
-            json.dump([board_data], f, indent=2, ensure_ascii=False)
-
-        manifest.append(
-            {
+            manifest_by_pos[pos] = {
                 "index": idx,
                 "board_name": board_name,
                 "board_id": board_id,
                 "year": input_year,
                 "crawl_year": crawl_year,
                 "crawl_date": crawl_date,
-                "board_link": board_link,
+                "board_link": board_link_w,
                 "has_paging": bool(entry.get("has_paging")),
                 "threads": len(board_data.get("threads", [])),
                 "file": str(file_path),
             }
-        )
+
+    # Build manifest and combined results in original input order.
+    manifest: List[Dict[str, Any]] = []
+    combined_results: List[Dict[str, Any]] = []
+
+    for pos in range(len(valid)):
+        if scraped[pos] is None:
+            continue
+        _, _, board_data = scraped[pos]
+        combined_results.append(board_data)
+        if pos in manifest_by_pos:
+            manifest.append(manifest_by_pos[pos])
 
     manifest_path = out_dir / "index.json"
     with manifest_path.open("w", encoding="utf-8") as f:
