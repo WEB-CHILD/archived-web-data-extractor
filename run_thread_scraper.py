@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 
 from extractor.thread_scraper import (
+    DEFAULT_BOARD_WORKERS,
+    DEFAULT_THREAD_WORKERS,
     scrape_boards_from_file,
     scrape_boards_from_file_chunked,
 )
@@ -33,6 +35,18 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         help="Directory for chunked output files (one JSON per board + index.json)",
+    )
+    parser.add_argument(
+        "--board-workers",
+        type=int,
+        default=DEFAULT_BOARD_WORKERS,
+        help="Number of boards to scrape in parallel (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--thread-workers",
+        type=int,
+        default=DEFAULT_THREAD_WORKERS,
+        help="Number of threads to scrape in parallel per board (default: %(default)s)",
     )
     parser.add_argument(
         "--log-level",
@@ -60,13 +74,20 @@ def main() -> None:
             args.input,
             args.output_dir,
             combined_output_path=args.output,
+            board_workers=args.board_workers,
+            thread_workers=args.thread_workers,
         )
         return
 
     if not args.output:
         parser.error("--output is required unless --output-dir is provided")
 
-    scrape_boards_from_file(args.input, args.output)
+    scrape_boards_from_file(
+        args.input,
+        args.output,
+        board_workers=args.board_workers,
+        thread_workers=args.thread_workers,
+    )
 
 
 if __name__ == "__main__":

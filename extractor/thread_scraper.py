@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Set
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from bs4 import BeautifulSoup
 
@@ -43,6 +43,8 @@ from extractor.utils import get_logger
 logger = get_logger(__name__)
 
 MAX_FETCH_FAILURES_PER_THREAD = 3
+DEFAULT_BOARD_WORKERS = 4
+DEFAULT_THREAD_WORKERS = 4
 
 
 class SiteProfile(Protocol):
@@ -63,10 +65,6 @@ class SiteProfile(Protocol):
 
 # Default profile. Swap by passing `profile=` to the scrape_* functions.
 DEFAULT_PROFILE: SiteProfile = NickMessageboards()
-
-
-def _sleep_polite() -> None:
-    time.sleep(0.3)
 
 
 def _slugify(value: str) -> str:
@@ -117,7 +115,6 @@ def scrape_thread(
 
         logger.info("Fetching thread page: %s", url)
         html = fetch_html(url)
-        _sleep_polite()
 
         if html is None:
             consecutive_failures += 1
@@ -170,18 +167,16 @@ def scrape_thread(
     return thread_result
 
 
-def scrape_board(
+def _collect_board_seed_links(
     board_link: str,
-    has_paging: bool = False,
-    profile: SiteProfile = DEFAULT_PROFILE,
-) -> Dict[str, Any]:
-    """Scrape all threads for a board page and optionally traverse pager pages."""
-    board_result: Dict[str, Any] = {"board_link": board_link, "threads": []}
-
-    # Reuse one visited set across all board pages to avoid duplicate thread work.
-    visited_threads: Set[str] = set()
+    has_paging: bool,
+    profile: SiteProfile,
+) -> List[str]:
+    """Phase 1: sequentially walk board pages and collect unique thread seed links."""
+    seed_links: List[str] = []
+    seen_seed: Set[str] = set()
     seen_board_pages: Set[str] = set()
-    board_queue = deque([board_link])
+    board_queue: deque = deque([board_link])
 
     while board_queue:
         current_board_url = board_queue.popleft()
@@ -191,7 +186,6 @@ def scrape_board(
 
         logger.info("Scraping board page: %s", current_board_url)
         html = fetch_html(current_board_url)
-        _sleep_polite()
 
         if html is None:
             logger.warning("Failed to fetch board page: %s", current_board_url)
@@ -200,33 +194,53 @@ def scrape_board(
         soup = BeautifulSoup(html, "lxml")
         page_text = soup.get_text(" ", strip=True).lower()
 
-        # Stop pursuing board paging at archive/site dead ends.
         if solrwayback.is_not_harvested(page_text) or profile.is_board_dead_end(page_text):
             logger.info("Board paging dead-end reached: %s", current_board_url)
             break
 
-        # Seed thread links on this board page (deduped, order-preserving).
-        seed_links: List[str] = []
-        seen_seed: Set[str] = set()
         for u in profile.find_thread_links(soup, current_board_url):
-            if u not in seen_seed:
+            key = _visit_key(u, profile)
+            if key not in seen_seed:
                 seed_links.append(u)
-                seen_seed.add(u)
+                seen_seed.add(key)
 
-        logger.info("Found %d seed thread links on board page", len(seed_links))
-
-        for link in seed_links:
-            if _visit_key(link, profile) in visited_threads:
-                continue
-            thread_data = scrape_thread(link, visited_threads, profile=profile)
-            board_result["threads"].append(thread_data)
-
-        # Follow the pager if requested.
         if has_paging:
             next_page = profile.find_next_page_link(soup, current_board_url)
             if next_page and next_page not in seen_board_pages:
                 logger.info("Following board pager Next posts: %s", next_page)
                 board_queue.append(next_page)
+
+    logger.info("Found %d unique thread seed links for board", len(seed_links))
+    return seed_links
+
+
+def scrape_board(
+    board_link: str,
+    has_paging: bool = False,
+    profile: SiteProfile = DEFAULT_PROFILE,
+    thread_workers: int = DEFAULT_THREAD_WORKERS,
+) -> Dict[str, Any]:
+    """Scrape all threads for a board page and optionally traverse pager pages.
+
+    Phase 1 (sequential): walk board index pages to collect all thread seed links.
+    Phase 2 (parallel): scrape each thread concurrently using a thread pool.
+    """
+    board_result: Dict[str, Any] = {"board_link": board_link, "threads": []}
+
+    seed_links = _collect_board_seed_links(board_link, has_paging, profile)
+    if not seed_links:
+        return board_result
+
+    with ThreadPoolExecutor(max_workers=thread_workers) as executor:
+        futures = {
+            executor.submit(scrape_thread, link, None, profile): link
+            for link in seed_links
+        }
+        for future in as_completed(futures):
+            try:
+                board_result["threads"].append(future.result())
+            except Exception as exc:
+                logger.error("Thread scrape failed for %s: %s", futures[future], exc)
 
     return board_result
 
@@ -235,24 +249,43 @@ def scrape_boards_from_file(
     input_path: str,
     output_path: str,
     profile: SiteProfile = DEFAULT_PROFILE,
+    board_workers: int = DEFAULT_BOARD_WORKERS,
+    thread_workers: int = DEFAULT_THREAD_WORKERS,
 ) -> None:
     """Load input JSON of boards, process `has_playback` entries, write output."""
     with open(input_path, "r", encoding="utf-8") as f:
         entries = json.load(f)
 
-    results: List[Dict[str, Any]] = []
-    for entry in entries:
-        if not entry.get("has_playback"):
-            continue
-        board_link = entry.get("board_link") or entry.get("url")
-        if not board_link:
-            continue
-        board_data = scrape_board(
-            board_link, has_paging=bool(entry.get("has_paging")), profile=profile
-        )
-        results.append(board_data)
+    valid_entries = [
+        e for e in entries
+        if e.get("has_playback") and (e.get("board_link") or e.get("url"))
+    ]
 
-    export_json(results, output_path)
+    def _scrape(entry: Dict[str, Any]) -> Dict[str, Any]:
+        board_link: str = entry.get("board_link") or entry.get("url")  # type: ignore[assignment]
+        assert board_link
+        return scrape_board(
+            board_link,
+            has_paging=bool(entry.get("has_paging")),
+            profile=profile,
+            thread_workers=thread_workers,
+        )
+
+    results: List[Dict[str, Any]] = [None] * len(valid_entries)  # type: ignore[list-item]
+    with ThreadPoolExecutor(max_workers=board_workers) as executor:
+        future_to_index = {
+            executor.submit(_scrape, entry): i
+            for i, entry in enumerate(valid_entries)
+        }
+        for future in as_completed(future_to_index):
+            i = future_to_index[future]
+            try:
+                results[i] = future.result()
+            except Exception as exc:
+                board_link = valid_entries[i].get("board_link") or valid_entries[i].get("url")
+                logger.error("Board scrape failed for %s: %s", board_link, exc)
+
+    export_json([r for r in results if r is not None], output_path)
 
 
 def scrape_boards_from_file_chunked(
@@ -260,10 +293,13 @@ def scrape_boards_from_file_chunked(
     output_dir: str,
     combined_output_path: Optional[str] = None,
     profile: SiteProfile = DEFAULT_PROFILE,
+    board_workers: int = DEFAULT_BOARD_WORKERS,
+    thread_workers: int = DEFAULT_THREAD_WORKERS,
 ) -> None:
     """Scrape boards and write one JSON file per board plus a manifest.
 
     Filenames include board id and crawl date when available.
+    Boards are scraped in parallel; output files are written in input order.
     """
     with open(input_path, "r", encoding="utf-8") as f:
         entries = json.load(f)
@@ -271,22 +307,49 @@ def scrape_boards_from_file_chunked(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest: List[Dict[str, Any]] = []
-    combined_results: List[Dict[str, Any]] = []
-
+    # Pre-assign stable 1-based indices to valid entries.
+    valid: List[Tuple[int, Dict[str, Any]]] = []
     board_index = 0
     for entry in entries:
         if not entry.get("has_playback"):
             continue
-
-        board_link = entry.get("board_link") or entry.get("url")
-        if not board_link:
+        if not (entry.get("board_link") or entry.get("url")):
             continue
-
         board_index += 1
+        valid.append((board_index, entry))
+
+    def _scrape(args: Tuple[int, Dict[str, Any]]) -> Tuple[int, Dict[str, Any], Dict[str, Any]]:
+        idx, entry = args
+        board_link: str = entry.get("board_link") or entry.get("url")  # type: ignore[assignment]
+        assert board_link
         board_data = scrape_board(
-            board_link, has_paging=bool(entry.get("has_paging")), profile=profile
+            board_link,
+            has_paging=bool(entry.get("has_paging")),
+            profile=profile,
+            thread_workers=thread_workers,
         )
+        return idx, entry, board_data
+
+    scraped: List[Tuple[int, Dict[str, Any], Dict[str, Any]]] = [None] * len(valid)  # type: ignore[list-item]
+    with ThreadPoolExecutor(max_workers=board_workers) as executor:
+        future_to_pos = {executor.submit(_scrape, item): pos for pos, item in enumerate(valid)}
+        for future in as_completed(future_to_pos):
+            pos = future_to_pos[future]
+            try:
+                scraped[pos] = future.result()
+            except Exception as exc:
+                idx, entry = valid[pos]
+                logger.error("Board scrape failed (index %d): %s", idx, exc)
+
+    manifest: List[Dict[str, Any]] = []
+    combined_results: List[Dict[str, Any]] = []
+
+    for item in scraped:
+        if item is None:
+            continue
+        idx, entry, board_data = item
+        board_link: str = entry.get("board_link") or entry.get("url")  # type: ignore[assignment]
+        assert board_link
         combined_results.append(board_data)
 
         board_id = str(entry.get("board_id") or profile.board_id(board_link) or "unknown")
@@ -296,16 +359,15 @@ def scrape_boards_from_file_chunked(
         board_name = str(entry.get("board_name") or f"board-{board_id}")
         slug = _slugify(board_name)
 
-        file_name = f"{board_index:04d}_y-{crawl_year}_bid-{board_id}_crawl-{crawl_date}_{slug}.json"
+        file_name = f"{idx:04d}_y-{crawl_year}_bid-{board_id}_crawl-{crawl_date}_{slug}.json"
         file_path = out_dir / file_name
 
-        # Store one board per file for easy downstream chunk processing.
         with file_path.open("w", encoding="utf-8") as f:
             json.dump([board_data], f, indent=2, ensure_ascii=False)
 
         manifest.append(
             {
-                "index": board_index,
+                "index": idx,
                 "board_name": board_name,
                 "board_id": board_id,
                 "year": input_year,
@@ -318,7 +380,6 @@ def scrape_boards_from_file_chunked(
             }
         )
 
-    # Manifest for downstream tools to enumerate chunks.
     manifest_path = out_dir / "index.json"
     with manifest_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -352,7 +413,6 @@ def scrape_board_subjects(
 
         logger.info("Fetching board subjects page: %s", current_url)
         html = fetch_html(current_url)
-        _sleep_polite()
 
         if html is None:
             logger.warning("Failed to fetch board page: %s", current_url)
