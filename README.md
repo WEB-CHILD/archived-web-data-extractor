@@ -298,8 +298,8 @@ The engine takes a **site profile** (defaults to `NickMessageboards`). To scrape
 ### How scraping works
 
 1. Entries with `has_playback: false` are skipped.
-2. For each board page, all `viewthread.jhtml` links are collected as thread seeds.
-3. If `has_paging: true`, "Next posts" pager links are followed to collect seeds from subsequent board pages.
+2. **Phase 1 (sequential):** For each board, all `viewthread.jhtml` links are collected as thread seeds by walking the board index page(s). If `has_paging: true`, "Next posts" pager links are followed in order until all seeds are gathered.
+3. **Phase 2 (parallel):** All collected thread seeds are scraped concurrently up to `--thread-workers` at a time. Multiple boards also run in parallel up to `--board-workers`.
 4. Each thread is scraped by fetching its page and following any further `viewthread.jhtml` links found (handles thread pagination and continuation links).
 5. If a page signals `"Url has never been harvested:"`, the thread is marked `not_harvested` and no posts are extracted from that page.
 6. Scraping a thread stops after **3 consecutive fetch failures**. A successful page fetch resets the failure counter, so a single network hiccup does not terminate a long thread.
