@@ -265,6 +265,9 @@ python run_thread_scraper.py --input examples/thread_scraper_input.json --output
 
 # Both at once
 python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --output output/threads_combined.json
+
+# Tune parallelism (boards × threads concurrent requests; default 4×4)
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --board-workers 8 --thread-workers 8
 ```
 
 | Flag | Default | Description |
@@ -272,9 +275,13 @@ python run_thread_scraper.py --input examples/thread_scraper_input.json --output
 | `--input` | *(required)* | Path to input JSON file |
 | `--output` | — | Path for combined output JSON |
 | `--output-dir` | — | Directory for per-board JSON files and `index.json` manifest |
+| `--board-workers` | `4` | Number of boards scraped in parallel |
+| `--thread-workers` | `4` | Number of threads scraped in parallel per board |
 | `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 A log file is written alongside the output (`scrape.log`).
+
+**Performance note:** boards and threads within each board are scraped concurrently using `ThreadPoolExecutor`. With the defaults of 4×4 you get up to 16 concurrent requests to SolrWayback. Increase the worker counts if the server can handle more load.
 
 ### Architecture (3 layers)
 
