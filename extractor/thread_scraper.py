@@ -55,6 +55,7 @@ class SiteProfile(Protocol):
     """
 
     def thread_id(self, url: str) -> str: ...
+    def logical_thread_id(self, url: str) -> str: ...
     def board_id(self, url: str) -> str: ...
     def find_thread_links(self, soup: BeautifulSoup, base_url: str) -> List[str]: ...
     def find_thread_subjects(self, soup: BeautifulSoup, base_url: str) -> List[Dict[str, str]]: ...
@@ -199,10 +200,14 @@ def _collect_board_seed_links(
             break
 
         for u in profile.find_thread_links(soup, current_board_url):
-            key = _visit_key(u, profile)
-            if key not in seen_seed:
+            # Deduplicate at the logical-thread level (bid+tid) so that board
+            # pages listing the same thread via multiple mIDs only produce one
+            # seed, preventing duplicate scrape_thread calls.
+            crawl_date = solrwayback.extract_crawl_date(u)
+            seed_key = f"crawl={crawl_date}|{profile.logical_thread_id(u)}"
+            if seed_key not in seen_seed:
                 seed_links.append(u)
-                seen_seed.add(key)
+                seen_seed.add(seed_key)
 
         if has_paging:
             next_page = profile.find_next_page_link(soup, current_board_url)

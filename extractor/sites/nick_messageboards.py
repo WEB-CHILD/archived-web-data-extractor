@@ -36,10 +36,13 @@ class NickMessageboards:
     SUBJECT = ("p", "subject")
 
     def thread_id(self, url: str) -> str:
-        """Stable id for a thread page based on bID/tID/mID.
+        """Page-level id for a thread URL: bid+tid+mid (offset excluded).
 
-        Collapses multiple archival snapshots of the same logical message.
-        Falls back to the original URL string when those params are absent.
+        Used as the within-thread visited-set key so each distinct post page
+        (different mID) is fetched exactly once.  Offset is intentionally
+        omitted so that `?mID=X&offset=0` and `?mID=X` map to the same key
+        and are not fetched twice.
+        Falls back to the original URL string when the params are absent.
         """
         original = solrwayback.extract_original_url(url)
         query = parse_qs(urlparse(original).query)
@@ -47,12 +50,30 @@ class NickMessageboards:
         bid = (query.get("bID") or query.get("bid") or [""])[0]
         tid = (query.get("tID") or query.get("tid") or [""])[0]
         mid = (query.get("mID") or query.get("mid") or [""])[0]
-        offset = (query.get("offset") or [""])[0]
 
         if not (bid or tid or mid):
             return original
 
-        return f"bid={bid}|tid={tid}|mid={mid}|offset={offset}"
+        return f"bid={bid}|tid={tid}|mid={mid}"
+
+    def logical_thread_id(self, url: str) -> str:
+        """Logical thread id: bid+tid only, ignoring which post is viewed.
+
+        Used by the board-seed collector to ensure only one scrape_thread call
+        is made per logical thread, even when the board index links to the same
+        thread via multiple different mIDs (e.g. root post + each reply).
+        Falls back to thread_id when tid is absent.
+        """
+        original = solrwayback.extract_original_url(url)
+        query = parse_qs(urlparse(original).query)
+
+        bid = (query.get("bID") or query.get("bid") or [""])[0]
+        tid = (query.get("tID") or query.get("tid") or [""])[0]
+
+        if not (bid or tid):
+            return self.thread_id(url)
+
+        return f"bid={bid}|tid={tid}"
 
     def board_id(self, url: str) -> str:
         """Extract the board id (bID) from a board URL, or '' if absent."""
