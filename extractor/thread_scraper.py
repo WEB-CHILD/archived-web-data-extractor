@@ -76,11 +76,6 @@ def _slugify(value: str) -> str:
     return text or "board"
 
 
-def _visit_key(url: str, profile: SiteProfile) -> str:
-    """Visited-key that preserves distinct crawl snapshots by crawl date."""
-    crawl_date = solrwayback.extract_crawl_date(url)
-    return f"crawl={crawl_date}|{profile.thread_id(url)}"
-
 
 def scrape_thread(
     start_url: str,
@@ -109,7 +104,11 @@ def scrape_thread(
 
     while queue:
         url = queue.popleft()
-        page_id = _visit_key(url, profile)
+        # Deduplicate within a thread by logical page identity (bid+tid+mid),
+        # ignoring crawl date. Different archive snapshots of the same page
+        # (same mID, different timestamp) produce identical post content and
+        # must not be fetched multiple times.
+        page_id = profile.thread_id(url)
         if page_id in visited:
             continue
         visited.add(page_id)
@@ -161,7 +160,7 @@ def scrape_thread(
 
         # Queue any further thread links found on this page.
         for link in profile.find_thread_links(soup, url):
-            if _visit_key(link, profile) not in visited:
+            if profile.thread_id(link) not in visited:
                 queue.append(link)
 
     # No posts but not explicitly "not harvested": leave status 'ok', empty posts.
