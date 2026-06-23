@@ -34,10 +34,11 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from bs4 import BeautifulSoup
 
+import importlib
+
 from extractor.archive import solrwayback
 from extractor.export import export_json
 from extractor.fetch import fetch_html
-from extractor.sites.nick_messageboards import NickMessageboards
 from extractor.utils import get_logger
 
 logger = get_logger(__name__)
@@ -64,8 +65,38 @@ class SiteProfile(Protocol):
     def extract_posts(self, soup: BeautifulSoup) -> List[Dict[str, Any]]: ...
 
 
-# Default profile. Swap by passing `profile=` to the scrape_* functions.
-DEFAULT_PROFILE: SiteProfile = NickMessageboards()
+def load_profile(dotted_path: str) -> SiteProfile:
+    """Instantiate a site profile class from a dotted import path.
+
+    Example: ``my_private_pkg.sites.nick.NickMessageboards``
+    The module must be importable (installed package or on PYTHONPATH).
+    """
+    module_path, _, class_name = dotted_path.rpartition(".")
+    if not module_path:
+        raise ValueError(
+            f"Invalid profile path (expected 'pkg.module.ClassName'): {dotted_path!r}"
+        )
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+    return cls()
+
+
+# Try to load the built-in nick profile; None when the module is absent
+# (e.g. when site-specific code lives in a separate private package).
+try:
+    from extractor.sites.nick_messageboards import NickMessageboards as _NickMessageboards
+    DEFAULT_PROFILE: Optional[SiteProfile] = _NickMessageboards()
+except ModuleNotFoundError:
+    DEFAULT_PROFILE = None
+
+
+def _require_profile(profile: Optional[SiteProfile]) -> SiteProfile:
+    if profile is None:
+        raise RuntimeError(
+            "No site profile available. Pass --profile pkg.module.ClassName or install "
+            "the package that provides extractor.sites.nick_messageboards."
+        )
+    return profile
 
 
 def _slugify(value: str) -> str:
@@ -80,7 +111,7 @@ def _slugify(value: str) -> str:
 def scrape_thread(
     start_url: str,
     visited: Optional[Set[str]] = None,
-    profile: SiteProfile = DEFAULT_PROFILE,
+    profile: Optional[SiteProfile] = DEFAULT_PROFILE,
 ) -> Dict[str, Any]:
     """Scrape a thread from `start_url`, following pagination/continuation.
 
@@ -88,6 +119,7 @@ def scrape_thread(
     Stops after `MAX_FETCH_FAILURES_PER_THREAD` consecutive fetch failures; a
     successful fetch resets the counter.
     """
+    profile = _require_profile(profile)
     if visited is None:
         visited = set()
 
@@ -221,7 +253,7 @@ def _collect_board_seed_links(
 def scrape_board(
     board_link: str,
     has_paging: bool = False,
-    profile: SiteProfile = DEFAULT_PROFILE,
+    profile: Optional[SiteProfile] = DEFAULT_PROFILE,
     thread_workers: int = DEFAULT_THREAD_WORKERS,
 ) -> Dict[str, Any]:
     """Scrape all threads for a board page and optionally traverse pager pages.
@@ -229,6 +261,7 @@ def scrape_board(
     Phase 1 (sequential): walk board index pages to collect all thread seed links.
     Phase 2 (parallel): scrape each thread concurrently using a thread pool.
     """
+    profile = _require_profile(profile)
     board_result: Dict[str, Any] = {"board_link": board_link, "threads": []}
 
     seed_links = _collect_board_seed_links(board_link, has_paging, profile)
@@ -252,11 +285,12 @@ def scrape_board(
 def scrape_boards_from_file(
     input_path: str,
     output_path: str,
-    profile: SiteProfile = DEFAULT_PROFILE,
+    profile: Optional[SiteProfile] = DEFAULT_PROFILE,
     board_workers: int = DEFAULT_BOARD_WORKERS,
     thread_workers: int = DEFAULT_THREAD_WORKERS,
 ) -> None:
     """Load input JSON of boards, process `has_playback` entries, write output."""
+    profile = _require_profile(profile)
     with open(input_path, "r", encoding="utf-8") as f:
         entries = json.load(f)
 
@@ -296,7 +330,7 @@ def scrape_boards_from_file_chunked(
     input_path: str,
     output_dir: str,
     combined_output_path: Optional[str] = None,
-    profile: SiteProfile = DEFAULT_PROFILE,
+    profile: Optional[SiteProfile] = DEFAULT_PROFILE,
     board_workers: int = DEFAULT_BOARD_WORKERS,
     thread_workers: int = DEFAULT_THREAD_WORKERS,
 ) -> None:
@@ -305,6 +339,7 @@ def scrape_boards_from_file_chunked(
     Filenames include board id and crawl date when available.
     Boards are scraped in parallel; output files are written in input order.
     """
+    profile = _require_profile(profile)
     with open(input_path, "r", encoding="utf-8") as f:
         entries = json.load(f)
 
@@ -404,7 +439,7 @@ def scrape_boards_from_file_chunked(
 def scrape_board_subjects(
     board_link: str,
     has_paging: bool = False,
-    profile: SiteProfile = DEFAULT_PROFILE,
+    profile: Optional[SiteProfile] = DEFAULT_PROFILE,
 ) -> List[Dict[str, str]]:
     """Collect thread subjects from a board index page (and its pager pages).
 
@@ -412,6 +447,7 @@ def scrape_board_subjects(
     directly from the `viewthread.jhtml` links on the board listing.  Returns
     a de-duplicated, order-preserving list of dicts with 'subject' and 'url'.
     """
+    profile = _require_profile(profile)
     threads: List[Dict[str, str]] = []
     seen_thread_ids: Set[str] = set()
     seen_board_pages: Set[str] = set()
@@ -456,7 +492,7 @@ def scrape_board_subjects(
 def scrape_board_subjects_from_file(
     input_path: str,
     output_path: str,
-    profile: SiteProfile = DEFAULT_PROFILE,
+    profile: Optional[SiteProfile] = DEFAULT_PROFILE,
 ) -> None:
     """Read board entries from input JSON and collect thread subjects for each.
 
@@ -464,6 +500,7 @@ def scrape_board_subjects_from_file(
     where each element contains board metadata plus a `subjects` list grouped
     by `year` and `board_name` (as present in the input entry).
     """
+    profile = _require_profile(profile)
     with open(input_path, "r", encoding="utf-8") as f:
         entries = json.load(f)
 

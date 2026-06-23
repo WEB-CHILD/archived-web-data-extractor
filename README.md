@@ -41,7 +41,7 @@ pip install -r requirements.txt
 ## Quick Start
 
 ```bash
-python run.py --config configs/clubs_example.yaml
+python run_extractor.py --config configs/clubs_example.yaml
 ```
 
 Output files appear in the `output/` directory as defined in the config.
@@ -51,7 +51,7 @@ Output files appear in the `output/` directory as defined in the config.
 
 ## Configuration (YAML)
 
-Each data extraction project is defined by a YAML config file.
+Each data extraction project is defined by a YAML config file. Config files and manifests can live anywhere on disk — including a separate private repository — since all paths are passed at runtime.
 
 **Required keys:**
 
@@ -146,7 +146,7 @@ year,month,url
 ## CLI Usage
 
 ```bash
-python run.py --config <path-to-config.yaml> [--log-level LEVEL]
+python run_extractor.py --config <path-to-config.yaml> [--log-level LEVEL]
 ```
 
 | Flag | Default | Description |
@@ -158,13 +158,13 @@ python run.py --config <path-to-config.yaml> [--log-level LEVEL]
 
 ```bash
 # Basic run
-python run.py --config configs/clubs_example.yaml
+python run_extractor.py --config configs/clubs_example.yaml
 
 # Verbose debug output
-python run.py --config configs/clubs_example.yaml --log-level DEBUG
+python run_extractor.py --config configs/clubs_example.yaml --log-level DEBUG
 
-# Run a different data extraction project
-python run.py --config configs/another_site.yaml
+# Config stored in a separate private repo
+python run_extractor.py --config /path/to/private-repo/configs/my_site.yaml
 ```
 
 ---
@@ -207,16 +207,18 @@ Tests use inline HTML fixtures — no network access required.
 
 ## Adding a New Data Extraction Project
 
-1. **Create a manifest CSV** in `manifests/`:
+Config files and manifests can live anywhere — inside this repo or in a separate private repository.
+
+1. **Create a manifest CSV:**
    ```csv
    year,month,url
    2005,03,https://example.org/2005/march.html
    ```
 
-2. **Create a YAML config** in `configs/`, pointing at the manifest and defining selectors for the target HTML:
+2. **Create a YAML config** pointing at the manifest and defining selectors for the target HTML:
    ```yaml
    name: my_new_project
-   manifest: manifests/my_urls.csv
+   manifest: /path/to/my_urls.csv
    selectors:
      row: "div.item"
      title: "h2.title"
@@ -228,7 +230,7 @@ Tests use inline HTML fixtures — no network access required.
 
 3. **Run the extractor:**
    ```bash
-   python run.py --config configs/my_new_project.yaml
+   python run_extractor.py --config /path/to/my_new_project.yaml
    ```
 
 No changes to any Python files are needed.
@@ -258,16 +260,16 @@ See `examples/thread_scraper_input.json` for a minimal working example.
 
 ```bash
 # Single combined output file
-python run_thread_scraper.py --input examples/thread_scraper_input.json --output output/threads.json
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output output/threads.json --profile my_private_pkg.sites.nick.NickMessageboards
 
 # One JSON file per board + manifest index
-python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --profile my_private_pkg.sites.nick.NickMessageboards
 
 # Both at once
-python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --output output/threads_combined.json
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --output output/threads_combined.json --profile my_private_pkg.sites.nick.NickMessageboards
 
 # Tune parallelism (boards × threads concurrent requests; default 4×4)
-python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --board-workers 8 --thread-workers 8
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --board-workers 8 --thread-workers 8 --profile my_private_pkg.sites.nick.NickMessageboards
 ```
 
 | Flag | Default | Description |
@@ -275,6 +277,7 @@ python run_thread_scraper.py --input examples/thread_scraper_input.json --output
 | `--input` | *(required)* | Path to input JSON file |
 | `--output` | — | Path for combined output JSON |
 | `--output-dir` | — | Directory for per-board JSON files and `index.json` manifest |
+| `--profile` | — | Dotted import path to a site profile class (see Architecture below) |
 | `--board-workers` | `4` | Number of boards scraped in parallel |
 | `--thread-workers` | `4` | Number of threads scraped in parallel per board |
 | `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
@@ -291,16 +294,36 @@ The thread scraper is split so site-specific code is isolated from the generic e
 |---|---|---|
 | Engine | `extractor/thread_scraper.py` | Traversal, retry/failure policy, snapshot de-dup, output. **No site-specific code.** |
 | Archive adapter | `extractor/archive/solrwayback.py` | SolrWayback playback URL parsing, crawl-date extraction, "never harvested" detection. Shared by any site behind SolrWayback. |
-| Site profile | `extractor/sites/nick_messageboards.py` | nick.com-specific: `viewthread.jhtml`/`viewboard.jhtml` link patterns, `bID`/`tID`/`mID` params, `MainSubject`/`subInfo`/`subject` HTML selectors, "Next posts" pager. |
+| Site profile | your private package | Per-site link patterns and post parsing. Passed at runtime via `--profile`. |
 
-The engine takes a **site profile** (defaults to `NickMessageboards`). To scrape a different board, add a new module under `extractor/sites/` implementing the same methods (`thread_id`, `board_id`, `find_thread_links`, `find_next_page_link`, `is_board_dead_end`, `extract_posts`) and pass an instance via the `profile=` argument of the `scrape_*` functions — no engine changes needed. The expected interface is documented by the `SiteProfile` Protocol in `extractor/thread_scraper.py`.
+**Site profiles** live outside this repo in a private package. The engine expects a class implementing the `SiteProfile` protocol defined in `extractor/thread_scraper.py`:
+
+| Method | Description |
+|---|---|
+| `thread_id(url)` | Page-level dedup key for a thread URL |
+| `logical_thread_id(url)` | Thread-level dedup key (ignores which post is viewed) |
+| `board_id(url)` | Extract board ID from a board URL |
+| `find_thread_links(soup, base_url)` | Return thread URLs from a board/thread page |
+| `find_thread_subjects(soup, base_url)` | Return `{subject, url}` dicts from a board page |
+| `find_next_page_link(soup, base_url)` | Return the next board pager URL, or `None` |
+| `is_board_dead_end(page_text)` | Site-specific signal that board paging has ended |
+| `extract_posts(soup)` | Return list of `{content, metadata}` dicts from a thread page |
+
+To add a new site, implement a class with these methods in your private package and pass it via `--profile`:
+
+```bash
+python run_thread_scraper.py --input input.json --output output.json \
+    --profile my_private_pkg.sites.my_new_site.MySiteProfile
+```
+
+The private package must be importable — either installed (`pip install -e /path/to/private-repo`) or on `PYTHONPATH`.
 
 ### How scraping works
 
 1. Entries with `has_playback: false` are skipped.
-2. **Phase 1 (sequential):** For each board, all `viewthread.jhtml` links are collected as thread seeds by walking the board index page(s). If `has_paging: true`, "Next posts" pager links are followed in order until all seeds are gathered.
+2. **Phase 1 (sequential):** For each board, all thread links are collected as seeds by walking the board index page(s). If `has_paging: true`, pager links are followed in order until all seeds are gathered.
 3. **Phase 2 (parallel):** All collected thread seeds are scraped concurrently up to `--thread-workers` at a time. Multiple boards also run in parallel up to `--board-workers`.
-4. Each thread is scraped by fetching its page and following any further `viewthread.jhtml` links found (handles thread pagination and continuation links).
+4. Each thread is scraped by fetching its page and following any further thread links found (handles thread pagination and continuation links).
 5. If a page signals `"Url has never been harvested:"`, the thread is marked `not_harvested` and no posts are extracted from that page.
 6. Scraping a thread stops after **3 consecutive fetch failures**. A successful page fetch resets the failure counter, so a single network hiccup does not terminate a long thread.
 
