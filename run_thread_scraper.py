@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 
 from extractor.thread_scraper import (
+    DEFAULT_BOARD_WORKERS,
+    DEFAULT_THREAD_WORKERS,
     scrape_boards_from_file,
     scrape_boards_from_file_chunked,
 )
@@ -35,14 +37,34 @@ def main() -> None:
         help="Directory for chunked output files (one JSON per board + index.json)",
     )
     parser.add_argument(
+        "--board-workers",
+        type=int,
+        default=DEFAULT_BOARD_WORKERS,
+        help="Number of boards to scrape in parallel (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--thread-workers",
+        type=int,
+        default=DEFAULT_THREAD_WORKERS,
+        help="Number of threads to scrape in parallel per board (default: %(default)s)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Console log verbosity (default: INFO)",
+    )
+    parser.add_argument(
+        "--file-log-level",
+        default="WARNING",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Log file verbosity — WARNING means only failures are recorded (default: WARNING)",
     )
 
     args = parser.parse_args()
     level = getattr(logging, args.log_level)
-    logging.getLogger().setLevel(level)
+    file_level = getattr(logging, args.file_log_level)
+    logging.getLogger().setLevel(min(level, file_level))
 
     # Attach file log handler next to output
     if args.output_dir:
@@ -52,7 +74,7 @@ def main() -> None:
     else:
         log_path = Path("scrape.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    _add_file_log_handler(log_path, level)
+    _add_file_log_handler(log_path, file_level)
     logging.getLogger("extractor").info("Log file: %s", log_path)
 
     if args.output_dir:
@@ -60,13 +82,20 @@ def main() -> None:
             args.input,
             args.output_dir,
             combined_output_path=args.output,
+            board_workers=args.board_workers,
+            thread_workers=args.thread_workers,
         )
         return
 
     if not args.output:
         parser.error("--output is required unless --output-dir is provided")
 
-    scrape_boards_from_file(args.input, args.output)
+    scrape_boards_from_file(
+        args.input,
+        args.output,
+        board_workers=args.board_workers,
+        thread_workers=args.thread_workers,
+    )
 
 
 if __name__ == "__main__":

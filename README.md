@@ -265,6 +265,9 @@ python run_thread_scraper.py --input examples/thread_scraper_input.json --output
 
 # Both at once
 python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --output output/threads_combined.json
+
+# Tune parallelism (boards × threads concurrent requests; default 4×4)
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --board-workers 8 --thread-workers 8
 ```
 
 | Flag | Default | Description |
@@ -272,9 +275,13 @@ python run_thread_scraper.py --input examples/thread_scraper_input.json --output
 | `--input` | *(required)* | Path to input JSON file |
 | `--output` | — | Path for combined output JSON |
 | `--output-dir` | — | Directory for per-board JSON files and `index.json` manifest |
+| `--board-workers` | `4` | Number of boards scraped in parallel |
+| `--thread-workers` | `4` | Number of threads scraped in parallel per board |
 | `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 A log file is written alongside the output (`scrape.log`).
+
+**Performance note:** boards and threads within each board are scraped concurrently using `ThreadPoolExecutor`. With the defaults of 4×4 you get up to 16 concurrent requests to SolrWayback. Increase the worker counts if the server can handle more load.
 
 ### Architecture (3 layers)
 
@@ -291,8 +298,8 @@ The engine takes a **site profile** (defaults to `NickMessageboards`). To scrape
 ### How scraping works
 
 1. Entries with `has_playback: false` are skipped.
-2. For each board page, all `viewthread.jhtml` links are collected as thread seeds.
-3. If `has_paging: true`, "Next posts" pager links are followed to collect seeds from subsequent board pages.
+2. **Phase 1 (sequential):** For each board, all `viewthread.jhtml` links are collected as thread seeds by walking the board index page(s). If `has_paging: true`, "Next posts" pager links are followed in order until all seeds are gathered.
+3. **Phase 2 (parallel):** All collected thread seeds are scraped concurrently up to `--thread-workers` at a time. Multiple boards also run in parallel up to `--board-workers`.
 4. Each thread is scraped by fetching its page and following any further `viewthread.jhtml` links found (handles thread pagination and continuation links).
 5. If a page signals `"Url has never been harvested:"`, the thread is marked `not_harvested` and no posts are extracted from that page.
 6. Scraping a thread stops after **3 consecutive fetch failures**. A successful page fetch resets the failure counter, so a single network hiccup does not terminate a long thread.
