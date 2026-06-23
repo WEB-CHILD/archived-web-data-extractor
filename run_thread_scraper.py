@@ -2,6 +2,8 @@
 
 Example:
   python run_thread_scraper.py --input input.json --output output.json
+  python run_thread_scraper.py --input input.json --output output.json \\
+      --profile my_private_pkg.sites.nick.NickMessageboards
 """
 
 import argparse
@@ -10,7 +12,9 @@ from pathlib import Path
 
 from extractor.thread_scraper import (
     DEFAULT_BOARD_WORKERS,
+    DEFAULT_PROFILE,
     DEFAULT_THREAD_WORKERS,
+    load_profile,
     scrape_boards_from_file,
     scrape_boards_from_file_chunked,
 )
@@ -35,6 +39,16 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         help="Directory for chunked output files (one JSON per board + index.json)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        metavar="PKG.MODULE.CLASS",
+        help=(
+            "Dotted import path to a site profile class, e.g. "
+            "my_private_pkg.sites.nick.NickMessageboards. "
+            "Falls back to the built-in nick profile when omitted."
+        ),
     )
     parser.add_argument(
         "--board-workers",
@@ -66,6 +80,8 @@ def main() -> None:
     file_level = getattr(logging, args.file_log_level)
     logging.getLogger().setLevel(min(level, file_level))
 
+    profile = load_profile(args.profile) if args.profile else DEFAULT_PROFILE
+
     # Attach file log handler next to output
     if args.output_dir:
         log_path = Path(args.output_dir) / "scrape.log"
@@ -82,6 +98,7 @@ def main() -> None:
             args.input,
             args.output_dir,
             combined_output_path=args.output,
+            profile=profile,
             board_workers=args.board_workers,
             thread_workers=args.thread_workers,
         )
@@ -93,6 +110,7 @@ def main() -> None:
     scrape_boards_from_file(
         args.input,
         args.output,
+        profile=profile,
         board_workers=args.board_workers,
         thread_workers=args.thread_workers,
     )
