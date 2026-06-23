@@ -99,8 +99,31 @@ output:
 **Notes:**
 - The `row` selector identifies repeating container elements.
 - Every other key in `selectors` names a field; its value is the CSS selector applied within each row.
+- Field definitions can also be objects for attribute or regex extraction:
+  - `selector` (or `css`): CSS selector inside each row
+  - `attr`: attribute name to extract instead of text (for example `href`)
+  - `regex`: optional regex to post-process the extracted value
+  - `group`: optional regex group index/name (default `1`)
 - Fields ending in `_count` (including `member_count`) are automatically converted to integers.
 - Extra columns in the manifest (beyond `year`, `month`, `url`) are automatically attached as metadata to every record.
+
+Example field object:
+
+```yaml
+selectors:
+  row: "ul li"
+  board_name: "a"
+  board_link:
+    selector: "a"
+    attr: "href"
+  board_id:
+    selector: "a"
+    attr: "href"
+    regex: "[?&]bID=(\\d+)"
+    group: 1
+  numeric_fields:
+    - board_id
+```
 
 ---
 
@@ -209,6 +232,102 @@ Tests use inline HTML fixtures — no network access required.
    ```
 
 No changes to any Python files are needed.
+
+---
+
+## Thread Scraper (messageboard playback)
+
+`run_thread_scraper.py` scrapes messageboard threads from SolrWayback playback pages. It takes a JSON list of board entries, visits each board page, discovers thread links, and recursively extracts all posts.
+
+### Input format
+
+Each entry in the input JSON represents one board page snapshot:
+
+| Field | Type | Description |
+|---|---|---|
+| `board_name` | string | Human-readable board name |
+| `board_link` | string | Full SolrWayback playback URL for the board page |
+| `board_id` | integer | Board ID extracted from the URL |
+| `year`, `month`, `day` | integer | Crawl date components |
+| `has_playback` | boolean | Skip this entry if `false` |
+| `has_paging` | boolean | Follow "Next posts" pager links across board pages if `true` |
+
+See `examples/thread_scraper_input.json` for a minimal working example.
+
+### CLI usage
+
+```bash
+# Single combined output file
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output output/threads.json
+
+# One JSON file per board + manifest index
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/
+
+# Both at once
+python run_thread_scraper.py --input examples/thread_scraper_input.json --output-dir output/chunks/ --output output/threads_combined.json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--input` | *(required)* | Path to input JSON file |
+| `--output` | — | Path for combined output JSON |
+| `--output-dir` | — | Directory for per-board JSON files and `index.json` manifest |
+| `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+A log file is written alongside the output (`scrape.log`).
+
+### Architecture (3 layers)
+
+The thread scraper is split so site-specific code is isolated from the generic engine:
+
+| Layer | Module | Responsibility |
+|---|---|---|
+| Engine | `extractor/thread_scraper.py` | Traversal, retry/failure policy, snapshot de-dup, output. **No site-specific code.** |
+| Archive adapter | `extractor/archive/solrwayback.py` | SolrWayback playback URL parsing, crawl-date extraction, "never harvested" detection. Shared by any site behind SolrWayback. |
+| Site profile | `extractor/sites/nick_messageboards.py` | nick.com-specific: `viewthread.jhtml`/`viewboard.jhtml` link patterns, `bID`/`tID`/`mID` params, `MainSubject`/`subInfo`/`subject` HTML selectors, "Next posts" pager. |
+
+The engine takes a **site profile** (defaults to `NickMessageboards`). To scrape a different board, add a new module under `extractor/sites/` implementing the same methods (`thread_id`, `board_id`, `find_thread_links`, `find_next_page_link`, `is_board_dead_end`, `extract_posts`) and pass an instance via the `profile=` argument of the `scrape_*` functions — no engine changes needed. The expected interface is documented by the `SiteProfile` Protocol in `extractor/thread_scraper.py`.
+
+### How scraping works
+
+1. Entries with `has_playback: false` are skipped.
+2. For each board page, all `viewthread.jhtml` links are collected as thread seeds.
+3. If `has_paging: true`, "Next posts" pager links are followed to collect seeds from subsequent board pages.
+4. Each thread is scraped by fetching its page and following any further `viewthread.jhtml` links found (handles thread pagination and continuation links).
+5. If a page signals `"Url has never been harvested:"`, the thread is marked `not_harvested` and no posts are extracted from that page.
+6. Scraping a thread stops after **3 consecutive fetch failures**. A successful page fetch resets the failure counter, so a single network hiccup does not terminate a long thread.
+
+### Output format
+
+```json
+[
+  {
+    "board_link": "http://...",
+    "threads": [
+      {
+        "thread_url": "http://...",
+        "crawl_date": "20030101120000",
+        "status": "ok",
+        "posts": [
+          {
+            "content": "Post body text",
+            "metadata": {
+              "subject": "Thread title",
+              "date": "January 1, 2003",
+              "from": "Username",
+              "subInfo": ["Date: January 1, 2003", "From: Username"],
+              "playback_url": "http://...",
+              "year_time_jump_detected": false
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+`status` values: `"ok"` (posts extracted), `"not_harvested"` (archive has no snapshot for this URL).
 
 ---
 

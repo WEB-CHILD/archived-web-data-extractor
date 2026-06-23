@@ -1,0 +1,32 @@
+[
+  {
+    "board_name": "Fan Art",
+    "board_link": "http://localhost:8080/solrwayback/services/web/20030101120000/http://www.example.com/messageboards/viewboard.jhtml?bID=1001",
+    "board_id": 1001,
+    "year": 2003,
+    "month": 1,
+    "day": 1,
+    "has_playback": true,
+    "has_paging": false
+  },
+  {
+    "board_name": "General Discussion",
+    "board_link": "http://localhost:8080/solrwayback/services/web/20030215083000/http://www.example.com/messageboards/viewboard.jhtml?bID=1002",
+    "board_id": 1002,
+    "year": 2003,
+    "month": 2,
+    "day": 15,
+    "has_playback": true,
+    "has_paging": true
+  },
+  {
+    "board_name": "Off Topic",
+    "board_link": "http://localhost:8080/solrwayback/services/web/20030301090000/http://www.example.com/messageboards/viewboard.jhtml?bID=1003",
+    "board_id": 1003,
+    "year": 2003,
+    "month": 3,
+    "day": 1,
+    "has_playback": false,
+    "has_paging": false
+  }
+]

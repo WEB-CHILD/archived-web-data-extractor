@@ -16,8 +16,7 @@ dist/
 *.egg-info/
 
 # Test and Pytest/cache
-test_page.html
-test_page_partial.html
+raw_sample_data/
 .pytest_cache/
 .mypy_cache/
 
