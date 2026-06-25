@@ -361,6 +361,52 @@ The private package must be importable — either installed (`pip install -e /pa
 
 ---
 
+## Subject Scraper (board index subjects)
+
+`run_subject_scraper.py` collects thread subjects listed on board index pages — without fetching individual thread pages. It uses the same input format as the thread scraper.
+
+### CLI usage
+
+```bash
+python run_subject_scraper.py --input examples/thread_scraper_input.json --output output/subjects.json --profile my_private_pkg.sites.nick.NickMessageboards
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--input` | *(required)* | Path to input JSON file (same format as thread scraper) |
+| `--output` | *(required)* | Path to output JSON file |
+| `--profile` | — | Dotted import path to a site profile class (see Thread Scraper architecture) |
+| `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+A log file is written alongside the output (same path with `.log` extension).
+
+### How it works
+
+- Entries with `has_playback: false` are skipped.
+- For each board, thread subjects and URLs are read directly from the board index page(s). If `has_paging: true`, pager links are followed until all subjects are gathered.
+- Individual thread pages are never fetched — this is significantly faster than the full thread scraper.
+
+### Output format
+
+```json
+[
+  {
+    "year": 2003,
+    "board_name": "General Discussion",
+    "board_id": 42,
+    "board_link": "http://...",
+    "threads": [
+      {
+        "subject": "Thread title",
+        "url": "http://..."
+      }
+    ]
+  }
+]
+```
+
+---
+
 ## Error Handling
 
 - Network errors, timeouts, and parse failures are logged and skipped.
