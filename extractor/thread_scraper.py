@@ -296,7 +296,7 @@ def scrape_boards_from_file(
 
     valid_entries = [
         e for e in entries
-        if e.get("has_playback") and (e.get("board_link") or e.get("url"))
+        if e.get("has_playback", True) and (e.get("board_link") or e.get("url"))
     ]
 
     def _scrape(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -350,7 +350,7 @@ def scrape_boards_from_file_chunked(
     valid: List[Tuple[int, Dict[str, Any]]] = []
     board_index = 0
     for entry in entries:
-        if not entry.get("has_playback"):
+        if not entry.get("has_playback", True):
             continue
         if not (entry.get("board_link") or entry.get("url")):
             continue

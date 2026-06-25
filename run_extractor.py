@@ -45,7 +45,7 @@ def load_manifest(manifest_path: str | Path) -> list[dict]:
     return df.to_dict(orient="records")
 
 
-def run(config_path: str) -> None:
+def run(config_path: str, manifest_override: str | None = None, output_dir_override: str | None = None) -> None:
     """Execute the full data extraction pipeline for a given config file.
 
     Steps:
@@ -57,6 +57,8 @@ def run(config_path: str) -> None:
 
     Args:
         config_path: Path to the YAML configuration file.
+        manifest_override: Optional path that replaces the manifest path in the config.
+        output_dir_override: Optional directory that replaces the dir of each output path in the config.
     """
     # --- 1. Load config ---
     logger.info("Loading config: %s", config_path)
@@ -70,8 +72,16 @@ def run(config_path: str) -> None:
     selectors = config["selectors"]
     output_config = config["output"]
 
+    if output_dir_override:
+        out_dir = Path(output_dir_override)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_config = {
+            fmt: str(out_dir / Path(path).name)
+            for fmt, path in output_config.items()
+        }
+
     # --- 2. Load manifest ---
-    manifest_path = config["manifest"]
+    manifest_path = manifest_override if manifest_override else config["manifest"]
     logger.info("Loading manifest: %s", manifest_path)
     try:
         manifest_rows = load_manifest(manifest_path)
@@ -164,6 +174,18 @@ def main() -> None:
         help="Path to a YAML configuration file",
     )
     parser.add_argument(
+        "--manifest",
+        default=None,
+        metavar="PATH",
+        help="Path to a URL manifest CSV — overrides the manifest path in the config",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="Directory for output files — overrides the paths in the config (keeps filenames)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -174,7 +196,7 @@ def main() -> None:
 
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
-    run(args.config)
+    run(args.config, manifest_override=args.manifest, output_dir_override=args.output_dir)
 
 
 if __name__ == "__main__":
